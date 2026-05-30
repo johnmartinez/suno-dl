@@ -10,8 +10,10 @@ defines the build order, implementation rules, and validation checkpoints.
 
 - Implement against SPEC.md exactly. Do not invent features or behaviors not
   specified there.
-- All logic lives in `suno_dl.py`. Do not split into multiple modules unless
-  explicitly instructed.
+- All logic lives in `suno-dl.py`. Do not split into multiple modules unless
+  explicitly instructed. Note: the hyphenated filename makes the script
+  non-importable as a Python module — it is run as a script only. This is
+  intentional and matches the installed binary name (`/usr/local/bin/suno-dl`).
 - Do not add dependencies beyond `requests`, `tqdm`, and `click`.
 - Never log or print the session cookie value at any log level.
 - All file writes must be atomic: write to `{dest}.tmp`, then `os.rename()`.
@@ -26,12 +28,13 @@ next. Do not skip ahead.
 
 ### Phase 1 — Skeleton and Config
 
-1. Create `suno_dl.py` with a `@click.command()` entry point.
+1. Create `suno-dl.py` with a `@click.command()` entry point.
 2. Implement `Config` dataclass. Load `SUNO_SESSION_COOKIE` from `os.environ`.
    Raise `ConfigError` with a clear message if missing.
 3. Wire all CLI flags from Section 3.1 of SPEC.md to `Config` fields.
 4. Print `Config` (redacting cookie) when `--verbose` is set.
-5. Validate: `python suno_dl.py --help` shows all flags. Missing cookie exits 2.
+5. Validate: `python suno-dl.py --help` shows all flags. Missing cookie exits 2.
+   `python suno-dl.py --version` prints `suno-dl, version <__version__>`.
 
 ### Phase 2 — SunoClient (Pagination Only)
 
@@ -105,8 +108,8 @@ suno-dl complete
    SPEC.md.
 2. Write `install.sh`:
    - `pip install -r requirements.txt --break-system-packages`
-   - `chmod +x suno_dl.py`
-   - `ln -sf $(pwd)/suno_dl.py /usr/local/bin/suno-dl`
+   - `chmod +x suno-dl.py`
+   - `ln -sf "$(pwd)/suno-dl.py" /usr/local/bin/suno-dl`
 3. Write `.env.example` with placeholder cookie value and instructions.
 4. Write `README.md` covering: cookie extraction steps (DevTools path),
    install, basic usage, flag reference, and troubleshooting expired cookies.
