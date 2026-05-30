@@ -2,16 +2,19 @@
 """suno-dl — bulk-download a Suno Pro library to local disk.
 
 See SPEC.md for the authoritative behavior specification and CLAUDE.md for
-the phased implementation plan. Phases 1–2 complete: CLI + Config + paginated
-track enumeration with --dry-run. Downloads land in Phase 4.
+the phased implementation plan. Phases 1–3 complete: CLI + Config + paginated
+track enumeration with --dry-run + Unicode-safe filename generation.
+Downloads land in Phase 4.
 """
 from __future__ import annotations
 
 import dataclasses
 import enum
 import os
+import re
 import sys
 import time
+import unicodedata
 from typing import Any
 
 import click
@@ -139,6 +142,46 @@ class SunoClient:
                 return all_tracks[:limit]
             page += 1
         return all_tracks
+
+
+_UNSAFE_CHARS = re.compile(r"[^a-zA-Z0-9 _-]")
+_WHITESPACE = re.compile(r"\s+")
+_MAX_TITLE_CHARS = 80
+
+
+class FileManager:
+    """Filesystem helpers per SPEC.md §3.3.
+
+    All methods are stateless; FileManager is grouped for clarity, not for state.
+    """
+
+    @staticmethod
+    def make_output_dir(path: str) -> None:
+        os.makedirs(path, exist_ok=True)
+
+    @staticmethod
+    def safe_filename(title: str, track_id: str) -> str:
+        # NFKD decomposes accented chars into base+combining-mark; ASCII-encode
+        # with ignore drops the combining marks and any other non-ASCII.
+        ascii_title = (
+            unicodedata.normalize("NFKD", title)
+            .encode("ascii", "ignore")
+            .decode("ascii")
+        )
+        cleaned = _UNSAFE_CHARS.sub("", ascii_title)
+        collapsed = _WHITESPACE.sub("_", cleaned)
+        # Strip leading/trailing punctuation so we don't produce "_X_id" or "X__id".
+        sanitized = collapsed.strip("_-")[:_MAX_TITLE_CHARS]
+        suffix = track_id[:8]
+        return f"{sanitized}_{suffix}" if sanitized else f"_{suffix}"
+
+    @staticmethod
+    def file_exists(path: str) -> bool:
+        return os.path.exists(path)
+
+    @staticmethod
+    def resolve_dest(output_dir: str, filename: str) -> str:
+        return os.path.join(output_dir, filename)
 
 
 @dataclasses.dataclass(frozen=True)
