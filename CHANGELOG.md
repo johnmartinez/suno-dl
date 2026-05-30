@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- CLI skeleton in `suno_dl.py`: `Config` dataclass, `AudioFormat` enum, `ConfigError`, and every flag from SPEC.md §3.1 wired through `click`. Session cookie loaded from `SUNO_SESSION_COOKIE` only; `--verbose` prints the loaded config with the cookie redacted. `__version__ = "0.1.0"`. (Phase 1, #1)
+- CLI skeleton in `suno-dl.py`: `Config` dataclass, `AudioFormat` enum, `ConfigError`, and every flag from SPEC.md §3.1 wired through `click`. Session cookie loaded from `SUNO_SESSION_COOKIE` only; `--verbose` prints the loaded config with the cookie redacted. `__version__ = "0.1.0"` exposed via `--version`. (Phase 1, #1)
+- Renamed script from `suno_dl.py` to `suno-dl.py` to match the repo and installed binary name. The script is no longer importable as a Python module — version is now inspected via `python suno-dl.py --version`. (#10)
 
 ### Planned for v0.1.0 (MVP)
 

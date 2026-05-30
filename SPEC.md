@@ -263,7 +263,7 @@ EXCEPTION ConfigError:
 
 ```
 suno-dl/
-├── suno_dl.py          -- single-file implementation (all logic)
+├── suno-dl.py          -- single-file implementation (all logic; script-only, not importable)
 ├── requirements.txt    -- requests, tqdm, click
 ├── install.sh          -- pip install + symlink to /usr/local/bin/suno-dl
 ├── .env.example        -- SUNO_SESSION_COOKIE=your_cookie_here
