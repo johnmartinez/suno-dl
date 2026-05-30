@@ -2,9 +2,9 @@
 """suno-dl — bulk-download a Suno Pro library to local disk.
 
 See SPEC.md for the authoritative behavior specification and CLAUDE.md for
-the phased implementation plan. Phases 1–3 complete: CLI + Config + paginated
-track enumeration with --dry-run + Unicode-safe filename generation.
-Downloads land in Phase 4.
+the phased implementation plan. Phases 1–5 complete: CLI + Config + paginated
+track enumeration + safe filenames + atomic downloads + progress bar &
+RunSummary. Resume/idempotency validation lands in Phase 6.
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from typing import Any
 
 import click
 import requests
+from tqdm import tqdm
 
 __version__ = "0.1.0"
 
@@ -72,6 +73,17 @@ class DownloadResult:
     status: DownloadStatus
     path: str | None
     error: str | None
+
+
+@dataclasses.dataclass(frozen=True)
+class RunSummary:
+    total_tracks: int
+    downloaded: int
+    skipped: int
+    failed: int
+    failed_ids: list[str]
+    output_dir: str
+    elapsed_seconds: float
 
 
 class SunoClient:
@@ -242,6 +254,78 @@ class FileManager:
     @staticmethod
     def resolve_dest(output_dir: str, filename: str) -> str:
         return os.path.join(output_dir, filename)
+
+
+class ProgressReporter:
+    """tqdm progress bar + verbose per-track lines + final RunSummary block.
+
+    Per SPEC.md §3.4. update() is called once per track after the download
+    attempt; verbose lines use tqdm.write so they interleave cleanly with
+    the active bar. The summary block goes to stdout with the exact field
+    layout from CLAUDE.md Phase 5.
+    """
+
+    _RULE = "━" * 36
+    _STATUS_TAG = {
+        DownloadStatus.DOWNLOADED: "[ok]  ",
+        DownloadStatus.SKIPPED:    "[skip]",
+        DownloadStatus.FAILED:     "[fail]",
+    }
+
+    def __init__(self, verbose: bool = False) -> None:
+        self._verbose = verbose
+        self._bar: tqdm | None = None
+
+    def start(self, total: int) -> None:
+        self._bar = tqdm(total=total, unit="track", dynamic_ncols=True)
+
+    def update(self, result: DownloadResult) -> None:
+        if self._verbose:
+            tag = self._STATUS_TAG[result.status]
+            line = f"{tag} {result.title} ({result.track_id[:8]})"
+            if result.error:
+                line += f": {result.error}"
+            tqdm.write(line)
+        if self._bar is not None:
+            self._bar.update(1)
+
+    def finish(self, summary: RunSummary) -> None:
+        if self._bar is not None:
+            self._bar.close()
+            self._bar = None
+        click.echo(self._RULE)
+        click.echo("suno-dl complete")
+        click.echo(f"  {'Total tracks':<13}: {summary.total_tracks}")
+        click.echo(f"  {'Downloaded':<13}: {summary.downloaded}")
+        click.echo(f"  {'Skipped':<13}: {summary.skipped}")
+        click.echo(f"  {'Failed':<13}: {summary.failed}")
+        click.echo(f"  {'Output dir':<13}: {summary.output_dir}")
+        click.echo(f"  {'Elapsed':<13}: {summary.elapsed_seconds:.1f}s")
+        click.echo(self._RULE)
+        if summary.failed_ids:
+            click.echo("Failed track IDs:")
+            for fid in summary.failed_ids:
+                click.echo(f"  {fid}")
+
+
+def compute_summary(
+    results: list[DownloadResult],
+    output_dir: str,
+    elapsed_seconds: float,
+) -> RunSummary:
+    downloaded = sum(1 for r in results if r.status == DownloadStatus.DOWNLOADED)
+    skipped = sum(1 for r in results if r.status == DownloadStatus.SKIPPED)
+    failed = sum(1 for r in results if r.status == DownloadStatus.FAILED)
+    failed_ids = [r.track_id for r in results if r.status == DownloadStatus.FAILED]
+    return RunSummary(
+        total_tracks=len(results),
+        downloaded=downloaded,
+        skipped=skipped,
+        failed=failed,
+        failed_ids=failed_ids,
+        output_dir=output_dir,
+        elapsed_seconds=elapsed_seconds,
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -416,7 +500,11 @@ def main(
     # a dry-run never touches the filesystem.
     FileManager.make_output_dir(config.output_dir)
 
+    reporter = ProgressReporter(verbose=config.verbose)
+    reporter.start(total=len(tracks))
     results: list[DownloadResult] = []
+    start_time = time.monotonic()
+
     for track in tracks:
         if config.format == AudioFormat.WAV and track.wav_url:
             ext = "wav"
@@ -429,33 +517,26 @@ def main(
 
         if FileManager.file_exists(dest):
             result = DownloadResult(track.id, track.title, DownloadStatus.SKIPPED, dest, None)
-            if config.verbose:
-                click.echo(f"[skip] {filename}")
         else:
             try:
                 client.download_file(url, dest)
                 result = DownloadResult(
                     track.id, track.title, DownloadStatus.DOWNLOADED, dest, None
                 )
-                if config.verbose:
-                    click.echo(f"[ok]   {filename}")
             except DownloadError as e:
                 result = DownloadResult(
                     track.id, track.title, DownloadStatus.FAILED, None, str(e)
                 )
-                click.echo(f"[fail] {track.title} ({track.id[:8]}): {e}", err=True)
         results.append(result)
+        reporter.update(result)
 
         if config.dl_delay_ms > 0:
             time.sleep(config.dl_delay_ms / 1000)
 
-    # Phase 5 (#5) replaces this terse line with the formal RunSummary block
-    # and tqdm progress bar.
-    n_dl = sum(1 for r in results if r.status == DownloadStatus.DOWNLOADED)
-    n_sk = sum(1 for r in results if r.status == DownloadStatus.SKIPPED)
-    n_fail = sum(1 for r in results if r.status == DownloadStatus.FAILED)
-    click.echo(f"done: {n_dl} downloaded, {n_sk} skipped, {n_fail} failed")
-    sys.exit(1 if n_fail else 0)
+    elapsed = time.monotonic() - start_time
+    summary = compute_summary(results, config.output_dir, elapsed)
+    reporter.finish(summary)
+    sys.exit(1 if summary.failed else 0)
 
 
 if __name__ == "__main__":
