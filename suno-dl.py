@@ -38,9 +38,19 @@ class APIError(Exception):
     """Non-200, non-auth response (or network failure) from Suno API."""
 
 
+class DownloadError(Exception):
+    """Per-track download failure: network error or non-200 from CDN. Non-fatal."""
+
+
 class AudioFormat(str, enum.Enum):
     MP3 = "mp3"
     WAV = "wav"
+
+
+class DownloadStatus(str, enum.Enum):
+    DOWNLOADED = "downloaded"
+    SKIPPED = "skipped"
+    FAILED = "failed"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -53,6 +63,15 @@ class Track:
     created_at: str
     tags: str
     metadata: dict[str, Any] = dataclasses.field(compare=False, repr=False)
+
+
+@dataclasses.dataclass(frozen=True)
+class DownloadResult:
+    track_id: str
+    title: str
+    status: DownloadStatus
+    path: str | None
+    error: str | None
 
 
 class SunoClient:
@@ -142,6 +161,47 @@ class SunoClient:
                 return all_tracks[:limit]
             page += 1
         return all_tracks
+
+    def download_file(self, url: str, dest_path: str) -> None:
+        """Stream `url` to `dest_path` atomically: write to .tmp, then rename.
+
+        Raises DownloadError on non-200, network error, or write failure.
+        On DownloadError the partial .tmp is cleaned up. KeyboardInterrupt
+        propagates with the .tmp left in place — Phase 6 (#6) adds a signal
+        handler to clean it up on Ctrl+C.
+        """
+        tmp_path = f"{dest_path}.tmp"
+        try:
+            try:
+                resp = self._session.get(
+                    url,
+                    headers=self._headers(),
+                    stream=True,
+                    timeout=self._REQUEST_TIMEOUT_S,
+                )
+            except requests.RequestException as e:
+                raise DownloadError(f"network error: {e}") from e
+
+            try:
+                if resp.status_code != 200:
+                    raise DownloadError(f"HTTP {resp.status_code} from CDN")
+                try:
+                    with open(tmp_path, "wb") as f:
+                        for chunk in resp.iter_content(chunk_size=64 * 1024):
+                            if chunk:
+                                f.write(chunk)
+                    os.rename(tmp_path, dest_path)
+                except (OSError, requests.RequestException) as e:
+                    raise DownloadError(f"stream/write error: {e}") from e
+            finally:
+                resp.close()
+        except DownloadError:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            raise
 
 
 _UNSAFE_CHARS = re.compile(r"[^a-zA-Z0-9 _-]")
@@ -352,8 +412,50 @@ def main(
             click.echo(f"{t.title}\t{t.id}\t{t.audio_url}")
         sys.exit(0)
 
-    # Download loop lands in Phase 4 (#4). Until then non-dry-run is a no-op
-    # after enumeration.
+    # output_dir is created here (post dry-run gate) so Scenario 3 holds:
+    # a dry-run never touches the filesystem.
+    FileManager.make_output_dir(config.output_dir)
+
+    results: list[DownloadResult] = []
+    for track in tracks:
+        if config.format == AudioFormat.WAV and track.wav_url:
+            ext = "wav"
+            url = track.wav_url
+        else:
+            ext = "mp3"
+            url = track.audio_url
+        filename = FileManager.safe_filename(track.title, track.id) + "." + ext
+        dest = FileManager.resolve_dest(config.output_dir, filename)
+
+        if FileManager.file_exists(dest):
+            result = DownloadResult(track.id, track.title, DownloadStatus.SKIPPED, dest, None)
+            if config.verbose:
+                click.echo(f"[skip] {filename}")
+        else:
+            try:
+                client.download_file(url, dest)
+                result = DownloadResult(
+                    track.id, track.title, DownloadStatus.DOWNLOADED, dest, None
+                )
+                if config.verbose:
+                    click.echo(f"[ok]   {filename}")
+            except DownloadError as e:
+                result = DownloadResult(
+                    track.id, track.title, DownloadStatus.FAILED, None, str(e)
+                )
+                click.echo(f"[fail] {track.title} ({track.id[:8]}): {e}", err=True)
+        results.append(result)
+
+        if config.dl_delay_ms > 0:
+            time.sleep(config.dl_delay_ms / 1000)
+
+    # Phase 5 (#5) replaces this terse line with the formal RunSummary block
+    # and tqdm progress bar.
+    n_dl = sum(1 for r in results if r.status == DownloadStatus.DOWNLOADED)
+    n_sk = sum(1 for r in results if r.status == DownloadStatus.SKIPPED)
+    n_fail = sum(1 for r in results if r.status == DownloadStatus.FAILED)
+    click.echo(f"done: {n_dl} downloaded, {n_sk} skipped, {n_fail} failed")
+    sys.exit(1 if n_fail else 0)
 
 
 if __name__ == "__main__":
