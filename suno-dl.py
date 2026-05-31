@@ -2,9 +2,9 @@
 """suno-dl — bulk-download a Suno Pro library to local disk.
 
 See SPEC.md for the authoritative behavior specification and CLAUDE.md for
-the phased implementation plan. Phases 1–5 complete: CLI + Config + paginated
+the phased implementation plan. Phases 1–6 complete: CLI + Config + paginated
 track enumeration + safe filenames + atomic downloads + progress bar &
-RunSummary. Resume/idempotency validation lands in Phase 6.
+RunSummary + resume-safe interrupt handling.
 """
 from __future__ import annotations
 
@@ -178,11 +178,16 @@ class SunoClient:
         """Stream `url` to `dest_path` atomically: write to .tmp, then rename.
 
         Raises DownloadError on non-200, network error, or write failure.
-        On DownloadError the partial .tmp is cleaned up. KeyboardInterrupt
-        propagates with the .tmp left in place — Phase 6 (#6) adds a signal
-        handler to clean it up on Ctrl+C.
+
+        The partial .tmp is cleaned up on ANY non-success exit path:
+        DownloadError, KeyboardInterrupt (Ctrl+C), SystemExit, or any other
+        unhandled exception. This guarantees the output directory never
+        accumulates `.tmp` orphans from interrupted runs, satisfying SPEC.md
+        Scenario 2 / Phase 6 (#6). dest_path itself is never observed half-
+        written — the os.rename is the atomic flip.
         """
         tmp_path = f"{dest_path}.tmp"
+        success = False
         try:
             try:
                 resp = self._session.get(
@@ -203,17 +208,17 @@ class SunoClient:
                             if chunk:
                                 f.write(chunk)
                     os.rename(tmp_path, dest_path)
+                    success = True
                 except (OSError, requests.RequestException) as e:
                     raise DownloadError(f"stream/write error: {e}") from e
             finally:
                 resp.close()
-        except DownloadError:
-            if os.path.exists(tmp_path):
+        finally:
+            if not success and os.path.exists(tmp_path):
                 try:
                     os.remove(tmp_path)
                 except OSError:
                     pass
-            raise
 
 
 _UNSAFE_CHARS = re.compile(r"[^a-zA-Z0-9 _-]")
@@ -504,38 +509,51 @@ def main(
     reporter.start(total=len(tracks))
     results: list[DownloadResult] = []
     start_time = time.monotonic()
+    interrupted = False
 
-    for track in tracks:
-        if config.format == AudioFormat.WAV and track.wav_url:
-            ext = "wav"
-            url = track.wav_url
-        else:
-            ext = "mp3"
-            url = track.audio_url
-        filename = FileManager.safe_filename(track.title, track.id) + "." + ext
-        dest = FileManager.resolve_dest(config.output_dir, filename)
+    try:
+        for track in tracks:
+            if config.format == AudioFormat.WAV and track.wav_url:
+                ext = "wav"
+                url = track.wav_url
+            else:
+                ext = "mp3"
+                url = track.audio_url
+            filename = FileManager.safe_filename(track.title, track.id) + "." + ext
+            dest = FileManager.resolve_dest(config.output_dir, filename)
 
-        if FileManager.file_exists(dest):
-            result = DownloadResult(track.id, track.title, DownloadStatus.SKIPPED, dest, None)
-        else:
-            try:
-                client.download_file(url, dest)
-                result = DownloadResult(
-                    track.id, track.title, DownloadStatus.DOWNLOADED, dest, None
-                )
-            except DownloadError as e:
-                result = DownloadResult(
-                    track.id, track.title, DownloadStatus.FAILED, None, str(e)
-                )
-        results.append(result)
-        reporter.update(result)
+            if FileManager.file_exists(dest):
+                result = DownloadResult(track.id, track.title, DownloadStatus.SKIPPED, dest, None)
+            else:
+                try:
+                    client.download_file(url, dest)
+                    result = DownloadResult(
+                        track.id, track.title, DownloadStatus.DOWNLOADED, dest, None
+                    )
+                except DownloadError as e:
+                    result = DownloadResult(
+                        track.id, track.title, DownloadStatus.FAILED, None, str(e)
+                    )
+            results.append(result)
+            reporter.update(result)
 
-        if config.dl_delay_ms > 0:
-            time.sleep(config.dl_delay_ms / 1000)
+            if config.dl_delay_ms > 0:
+                time.sleep(config.dl_delay_ms / 1000)
+    except KeyboardInterrupt:
+        # download_file's finally has already cleaned up the in-progress .tmp
+        # (if any). Print whatever we got so the user knows where the run stopped.
+        interrupted = True
 
     elapsed = time.monotonic() - start_time
     summary = compute_summary(results, config.output_dir, elapsed)
     reporter.finish(summary)
+    if interrupted:
+        click.echo(
+            "interrupted by user — re-run the same command to resume from "
+            "where this left off.",
+            err=True,
+        )
+        sys.exit(1)
     sys.exit(1 if summary.failed else 0)
 
 
