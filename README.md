@@ -13,16 +13,16 @@
 ```bash
 git clone https://github.com/johnmartinez/suno-dl.git
 cd suno-dl
-sudo bash install.sh
+./install.sh
 ```
 
-`sudo` is only needed for the symlink into `/usr/local/bin`. If you'd rather skip that, see [Install without sudo](#install-without-sudo) below.
+Run as your regular user — **not** with sudo. `install.sh` invokes `sudo` itself for the single step that needs it (the symlink into `/usr/local/bin`) and will prompt for your password at that point. Running the whole script as root would install the Python packages into the system site-packages instead of your user site. If you'd rather avoid sudo entirely, see [Install without sudo](#install-without-sudo) below.
 
 `install.sh` does three things:
 
-1. `pip install -r requirements.txt --break-system-packages` — installs `requests`, `tqdm`, `click`
+1. `pip install -r requirements.txt --break-system-packages` — installs `requests`, `tqdm`, `click` (as your user)
 2. `chmod +x suno-dl.py`
-3. `ln -sf "$(pwd)/suno-dl.py" /usr/local/bin/suno-dl`
+3. `ln -sf "$(pwd)/suno-dl.py" /usr/local/bin/suno-dl` (via `sudo` if `/usr/local/bin` isn't writable by you)
 
 After install, `suno-dl --help` should work from anywhere.
 
