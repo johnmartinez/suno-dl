@@ -2,9 +2,9 @@
 """suno-dl — bulk-download a Suno Pro library to local disk.
 
 See SPEC.md for the authoritative behavior specification and CLAUDE.md for
-the phased implementation plan. Phases 1–6 complete: CLI + Config + paginated
+the phased implementation plan. Phases 1–7 complete: CLI + Config + paginated
 track enumeration + safe filenames + atomic downloads + progress bar &
-RunSummary + resume-safe interrupt handling.
+RunSummary + resume-safe interrupt handling + WAV format with MP3 fallback.
 """
 from __future__ import annotations
 
@@ -294,6 +294,15 @@ class ProgressReporter:
         if self._bar is not None:
             self._bar.update(1)
 
+    def info(self, msg: str) -> None:
+        """Verbose-only diagnostic line that doesn't advance the bar.
+
+        Use for pre-download notices (e.g. WAV→MP3 fallback) that aren't
+        a DownloadResult but the user may want to see when debugging.
+        """
+        if self._verbose:
+            tqdm.write(msg)
+
     def finish(self, summary: RunSummary) -> None:
         if self._bar is not None:
             self._bar.close()
@@ -517,6 +526,12 @@ def main(
                 ext = "wav"
                 url = track.wav_url
             else:
+                if config.format == AudioFormat.WAV and not track.wav_url:
+                    # Spec'd silent fallback: only mention it in verbose mode.
+                    reporter.info(
+                        f"[wav→mp3] {track.title} ({track.id[:8]}): "
+                        "wav_url not available, falling back to MP3"
+                    )
                 ext = "mp3"
                 url = track.audio_url
             filename = FileManager.safe_filename(track.title, track.id) + "." + ext
