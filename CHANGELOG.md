@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.1.0] - 2026-05-30
+
+Initial release. Single-file Python CLI that bulk-downloads a Suno Pro library to local disk, with resume + atomic writes + interrupt-safe `.tmp` cleanup.
+
 ### Added
 
 - CLI skeleton in `suno-dl.py`: `Config` dataclass, `AudioFormat` enum, `ConfigError`, and every flag from SPEC.md §3.1 wired through `click`. Session cookie loaded from `SUNO_SESSION_COOKIE` only; `--verbose` prints the loaded config with the cookie redacted. `__version__ = "0.1.0"` exposed via `--version`. (Phase 1, #1)
@@ -20,4 +26,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Renamed script from `suno_dl.py` to `suno-dl.py` to match the repo and installed binary name. The script is no longer importable as a Python module — version is now inspected via `python suno-dl.py --version`. (#10)
 
 
-[Unreleased]: https://github.com/johnmartinez/suno-dl/compare/HEAD...HEAD
+[Unreleased]: https://github.com/johnmartinez/suno-dl/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/johnmartinez/suno-dl/releases/tag/v0.1.0
